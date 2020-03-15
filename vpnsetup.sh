@@ -24,7 +24,6 @@
 # - All values MUST be placed inside 'single quotes'
 # - DO NOT use these special characters within values: \ " '
 
-YOUR_IPSEC_PSK=''
 YOUR_USERNAME=''
 YOUR_PASSWORD=''
 
@@ -91,26 +90,21 @@ else
   NET_IFACE=eth0
 fi
 
-[ -n "$YOUR_IPSEC_PSK" ] && VPN_IPSEC_PSK="$YOUR_IPSEC_PSK"
 [ -n "$YOUR_USERNAME" ] && VPN_USER="$YOUR_USERNAME"
 [ -n "$YOUR_PASSWORD" ] && VPN_PASSWORD="$YOUR_PASSWORD"
 
-if [ -z "$VPN_IPSEC_PSK" ] && [ -z "$VPN_USER" ] && [ -z "$VPN_PASSWORD" ]; then
+if [ -z "$VPN_USER" ] && [ -z "$VPN_PASSWORD" ]; then
   bigecho "VPN credentials not set by user. Generating random PSK and password..."
-  VPN_IPSEC_PSK=$(LC_CTYPE=C tr -dc 'A-HJ-NPR-Za-km-z2-9' < /dev/urandom | head -c 20)
   VPN_USER=vpnuser
   VPN_PASSWORD=$(LC_CTYPE=C tr -dc 'A-HJ-NPR-Za-km-z2-9' < /dev/urandom | head -c 16)
 fi
 
-if [ -z "$VPN_IPSEC_PSK" ] || [ -z "$VPN_USER" ] || [ -z "$VPN_PASSWORD" ]; then
-  exiterr "All VPN credentials must be specified. Edit the script and re-enter them."
-fi
 
-if printf '%s' "$VPN_IPSEC_PSK $VPN_USER $VPN_PASSWORD" | LC_ALL=C grep -q '[^ -~]\+'; then
+if printf '%s' "$VPN_USER $VPN_PASSWORD" | LC_ALL=C grep -q '[^ -~]\+'; then
   exiterr "VPN credentials must not contain non-ASCII characters."
 fi
 
-case "$VPN_IPSEC_PSK $VPN_USER $VPN_PASSWORD" in
+case "$VPN_USER $VPN_PASSWORD" in
   *[\\\"\']*)
     exiterr "VPN credentials must not contain these special characters: \\ \" '"
     ;;
@@ -170,118 +164,23 @@ bigecho "Installing Fail2Ban to protect SSH..."
 
 apt-get -yq install fail2ban || exiterr2
 
-bigecho "Compiling and installing Libreswan..."
-
-SWAN_VER=3.29
-swan_file="libreswan-$SWAN_VER.tar.gz"
-swan_url1="https://github.com/libreswan/libreswan/archive/v$SWAN_VER.tar.gz"
-swan_url2="https://download.libreswan.org/$swan_file"
-if ! { wget -t 3 -T 30 -nv -O "$swan_file" "$swan_url1" || wget -t 3 -T 30 -nv -O "$swan_file" "$swan_url2"; }; then
-  exit 1
-fi
-/bin/rm -rf "/opt/src/libreswan-$SWAN_VER"
-tar xzf "$swan_file" && /bin/rm -f "$swan_file"
-cd "libreswan-$SWAN_VER" || exit 1
-cat > Makefile.inc.local <<'EOF'
-WERROR_CFLAGS =
-USE_DNSSEC = false
-USE_DH31 = false
-USE_NSS_AVA_COPY = true
-USE_NSS_IPSEC_PROFILE = false
-USE_GLIBC_KERN_FLIP_HEADERS = true
-EOF
-if [ "$(packaging/utils/lswan_detect.sh init)" = "systemd" ]; then
-  apt-get -yq install libsystemd-dev || exiterr2
-fi
-NPROCS=$(grep -c ^processor /proc/cpuinfo)
-[ -z "$NPROCS" ] && NPROCS=1
-make "-j$((NPROCS+1))" -s base && make -s install-base
-
-cd /opt/src || exit 1
-/bin/rm -rf "/opt/src/libreswan-$SWAN_VER"
-if ! /usr/local/sbin/ipsec --version 2>/dev/null | grep -qF "$SWAN_VER"; then
-  exiterr "Libreswan $SWAN_VER failed to build."
-fi
-
 bigecho "Creating VPN configuration..."
 
 L2TP_NET=${VPN_L2TP_NET:-'192.168.42.0/24'}
 L2TP_LOCAL=${VPN_L2TP_LOCAL:-'192.168.42.1'}
 L2TP_POOL=${VPN_L2TP_POOL:-'192.168.42.10-192.168.42.250'}
-XAUTH_NET=${VPN_XAUTH_NET:-'192.168.43.0/24'}
-XAUTH_POOL=${VPN_XAUTH_POOL:-'192.168.43.10-192.168.43.250'}
 DNS_SRV1=${VPN_DNS_SRV1:-'8.8.8.8'}
 DNS_SRV2=${VPN_DNS_SRV2:-'8.8.4.4'}
 DNS_SRVS="\"$DNS_SRV1 $DNS_SRV2\""
 [ -n "$VPN_DNS_SRV1" ] && [ -z "$VPN_DNS_SRV2" ] && DNS_SRVS="$DNS_SRV1"
-
-# Create IPsec config
-conf_bk "/etc/ipsec.conf"
-cat > /etc/ipsec.conf <<EOF
-version 2.0
-
-config setup
-  virtual-private=%v4:10.0.0.0/8,%v4:192.168.0.0/16,%v4:172.16.0.0/12,%v4:!$L2TP_NET,%v4:!$XAUTH_NET
-  protostack=netkey
-  interfaces=%defaultroute
-  uniqueids=no
-
-conn shared
-  left=%defaultroute
-  leftid=$PUBLIC_IP
-  right=%any
-  encapsulation=yes
-  authby=secret
-  pfs=no
-  rekey=no
-  keyingtries=5
-  dpddelay=30
-  dpdtimeout=120
-  dpdaction=clear
-  ikev2=never
-  ike=aes256-sha2,aes128-sha2,aes256-sha1,aes128-sha1,aes256-sha2;modp1024,aes128-sha1;modp1024
-  phase2alg=aes_gcm-null,aes128-sha1,aes256-sha1,aes256-sha2_512,aes128-sha2,aes256-sha2
-  sha2-truncbug=no
-
-conn l2tp-psk
-  auto=add
-  leftprotoport=17/1701
-  rightprotoport=17/%any
-  type=transport
-  phase2=esp
-  also=shared
-
-conn xauth-psk
-  auto=add
-  leftsubnet=0.0.0.0/0
-  rightaddresspool=$XAUTH_POOL
-  modecfgdns=$DNS_SRVS
-  leftxauthserver=yes
-  rightxauthclient=yes
-  leftmodecfgserver=yes
-  rightmodecfgclient=yes
-  modecfgpull=yes
-  xauthby=file
-  ike-frag=yes
-  cisco-unity=yes
-  also=shared
-EOF
-
-if uname -m | grep -qi '^arm'; then
-  sed -i '/phase2alg/s/,aes256-sha2_512//' /etc/ipsec.conf
-fi
-
-# Specify IPsec PSK
-conf_bk "/etc/ipsec.secrets"
-cat > /etc/ipsec.secrets <<EOF
-%any  %any  : PSK "$VPN_IPSEC_PSK"
-EOF
 
 # Create xl2tpd config
 conf_bk "/etc/xl2tpd/xl2tpd.conf"
 cat > /etc/xl2tpd/xl2tpd.conf <<EOF
 [global]
 port = 1701
+access control = yes
+auth file = /etc/ppp/chap-secrets
 
 [lns default]
 ip range = $L2TP_POOL
@@ -292,12 +191,14 @@ require authentication = yes
 name = l2tpd
 pppoptfile = /etc/ppp/options.xl2tpd
 length bit = yes
+assign ip = yes
+lac = 0.0.0.0 - 254.254.254.254
 EOF
 
 # Set xl2tpd options
 conf_bk "/etc/ppp/options.xl2tpd"
 cat > /etc/ppp/options.xl2tpd <<EOF
-+mschap-v2
+require-mschap-v2
 ipcp-accept-local
 ipcp-accept-remote
 noccp
@@ -305,6 +206,7 @@ auth
 mtu 1280
 mru 1280
 proxyarp
+name username # username for chap authentication
 lcp-echo-failure 4
 lcp-echo-interval 30
 connect-delay 5000
@@ -320,13 +222,7 @@ fi
 # Create VPN credentials
 conf_bk "/etc/ppp/chap-secrets"
 cat > /etc/ppp/chap-secrets <<EOF
-"$VPN_USER" l2tpd "$VPN_PASSWORD" *
-EOF
-
-conf_bk "/etc/ipsec.d/passwd"
-VPN_PASSWORD_ENC=$(openssl passwd -1 "$VPN_PASSWORD")
-cat > /etc/ipsec.d/passwd <<EOF
-$VPN_USER:$VPN_PASSWORD_ENC:xauth-psk
+"$VPN_USER" * "$VPN_PASSWORD" *
 EOF
 
 bigecho "Updating sysctl settings..."
@@ -374,8 +270,7 @@ ipt_flag=0
 IPT_FILE="/etc/iptables.rules"
 IPT_FILE2="/etc/iptables/rules.v4"
 if ! grep -qs "hwdsl2 VPN script" "$IPT_FILE" \
-   || ! iptables -t nat -C POSTROUTING -s "$L2TP_NET" -o "$NET_IFACE" -j MASQUERADE 2>/dev/null \
-   || ! iptables -t nat -C POSTROUTING -s "$XAUTH_NET" -o "$NET_IFACE" -m policy --dir out --pol none -j MASQUERADE 2>/dev/null; then
+   || ! iptables -t nat -C POSTROUTING -s "$L2TP_NET" -o "$NET_IFACE" -j MASQUERADE 2>/dev/null; then
   ipt_flag=1
 fi
 
@@ -383,23 +278,6 @@ fi
 if [ "$ipt_flag" = "1" ]; then
   service fail2ban stop >/dev/null 2>&1
   iptables-save > "$IPT_FILE.old-$SYS_DT"
-  iptables -I INPUT 1 -p udp --dport 1701 -m policy --dir in --pol none -j DROP
-  iptables -I INPUT 2 -m conntrack --ctstate INVALID -j DROP
-  iptables -I INPUT 3 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-  iptables -I INPUT 4 -p udp -m multiport --dports 500,4500 -j ACCEPT
-  iptables -I INPUT 5 -p udp --dport 1701 -m policy --dir in --pol ipsec -j ACCEPT
-  iptables -I INPUT 6 -p udp --dport 1701 -j DROP
-  iptables -I FORWARD 1 -m conntrack --ctstate INVALID -j DROP
-  iptables -I FORWARD 2 -i "$NET_IFACE" -o ppp+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-  iptables -I FORWARD 3 -i ppp+ -o "$NET_IFACE" -j ACCEPT
-  iptables -I FORWARD 4 -i ppp+ -o ppp+ -s "$L2TP_NET" -d "$L2TP_NET" -j ACCEPT
-  iptables -I FORWARD 5 -i "$NET_IFACE" -d "$XAUTH_NET" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-  iptables -I FORWARD 6 -s "$XAUTH_NET" -o "$NET_IFACE" -j ACCEPT
-  # Uncomment if you wish to disallow traffic between VPN clients themselves
-  # iptables -I FORWARD 2 -i ppp+ -o ppp+ -s "$L2TP_NET" -d "$L2TP_NET" -j DROP
-  # iptables -I FORWARD 3 -s "$XAUTH_NET" -d "$XAUTH_NET" -j DROP
-  iptables -A FORWARD -j DROP
-  iptables -t nat -I POSTROUTING -s "$XAUTH_NET" -o "$NET_IFACE" -m policy --dir out --pol none -j MASQUERADE
   iptables -t nat -I POSTROUTING -s "$L2TP_NET" -o "$NET_IFACE" -j MASQUERADE
   echo "# Modified by hwdsl2 VPN script" > "$IPT_FILE"
   iptables-save >> "$IPT_FILE"
@@ -453,7 +331,7 @@ EOF
   fi
 fi
 
-for svc in fail2ban ipsec xl2tpd; do
+for svc in fail2ban xl2tpd; do
   update-rc.d "$svc" enable >/dev/null 2>&1
   systemctl enable "$svc" 2>/dev/null
 done
@@ -469,7 +347,6 @@ cat >> /etc/rc.local <<'EOF'
 
 # Added by hwdsl2 VPN script
 (sleep 15
-service ipsec restart
 service xl2tpd restart
 echo 1 > /proc/sys/net/ipv4/ip_forward)&
 exit 0
@@ -483,7 +360,7 @@ sysctl -e -q -p
 
 # Update file attributes
 chmod +x /etc/rc.local
-chmod 600 /etc/ipsec.secrets* /etc/ppp/chap-secrets* /etc/ipsec.d/passwd*
+chmod 600 /etc/ppp/chap-secrets*
 
 # Apply new IPTables rules
 iptables-restore < "$IPT_FILE"
@@ -491,7 +368,6 @@ iptables-restore < "$IPT_FILE"
 # Restart services
 mkdir -p /run/pluto
 service fail2ban restart 2>/dev/null
-service ipsec restart 2>/dev/null
 service xl2tpd restart 2>/dev/null
 
 cat <<EOF
@@ -503,7 +379,6 @@ IPsec VPN server is now ready for use!
 Connect to your new VPN with these details:
 
 Server IP: $PUBLIC_IP
-IPsec PSK: $VPN_IPSEC_PSK
 Username: $VPN_USER
 Password: $VPN_PASSWORD
 

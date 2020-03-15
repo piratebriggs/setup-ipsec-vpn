@@ -15,12 +15,6 @@
         "description": "Password for VPN and SSH"
       }
     },
-   "preSharedKey": {
-      "type": "securestring",
-      "metadata": {
-        "description": "IPsec Pre-Shared Key for VPN"
-      }
-    },
     "image": {
       "type": "string",
       "allowedValues": [
@@ -79,8 +73,8 @@
       "sku": "9",
       "version": "latest"
     },
-    "installScriptURL": "https://raw.githubusercontent.com/hwdsl2/setup-ipsec-vpn/master/azure/install.sh",
-    "installCommand": "[concat('sh install.sh ', variables('quote'), parameters('preSharedKey'), variables('quote'), ' ', variables('quote'), parameters('username'), variables('quote'), ' ', variables('quote'), parameters('password'), variables('quote'))]"
+    "installScriptURL": "https://raw.githubusercontent.com/piratebriggs/setup-ipsec-vpn/master/azure/install.sh",
+    "installCommand": "[concat('sh install.sh ', variables('quote'), parameters('username'), variables('quote'), ' ', variables('quote'), parameters('password'), variables('quote'))]"
   },
   "resources": [
     {
@@ -240,28 +234,15 @@
             }
           },
           {
-            "name": "default-udp-500",
+            "name": "default-tcp-1701",
             "properties": {
               "protocol": "Udp",
               "sourcePortRange": "*",
-              "destinationPortRange": "500",
+              "destinationPortRange": "1701",
               "sourceAddressPrefix": "*",
               "destinationAddressPrefix": "*",
               "access": "Allow",
               "priority": 2000,
-              "direction": "Inbound"
-            }
-          },
-          {
-            "name": "default-udp-4500",
-            "properties": {
-              "protocol": "Udp",
-              "sourcePortRange": "*",
-              "destinationPortRange": "4500",
-              "sourceAddressPrefix": "*",
-              "destinationAddressPrefix": "*",
-              "access": "Allow",
-              "priority": 2001,
               "direction": "Inbound"
             }
           }
