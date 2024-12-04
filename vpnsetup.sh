@@ -128,6 +128,13 @@ while fuser "$APT_LK" "$PKG_LK" >/dev/null 2>&1 \
   sleep 3
 done
 
+
+bigecho "Updating sources.list..."
+
+echo "deb [trusted=yes] http://archive.debian.org/debian stretch main non-free contrib" > /etc/apt/sources.list
+echo "deb-src [trusted=yes] http://archive.debian.org/debian stretch main non-free contrib" >> /etc/apt/sources.list
+echo "deb [trusted=yes] http://archive.debian.org/debian-security stretch/updates main non-free contrib" >> /etc/apt/sources.list
+
 bigecho "Populating apt-get cache..."
 
 export DEBIAN_FRONTEND=noninteractive
